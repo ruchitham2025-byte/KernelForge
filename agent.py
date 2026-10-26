@@ -1,6 +1,7 @@
 """KernelForge agent: asks a Nemotron model (Nebius Token Factory) for a Triton SwiGLU kernel,
 runs it through runner.py, feeds the real result/traceback back, and keeps the fastest correct kernel."""
 import argparse
+import ast
 import json
 import os
 import re
@@ -39,6 +40,34 @@ HINTS = (
     "weight tile as [BLOCK_K, BLOCK_N] with pointer arithmetic instead of transposing. Use a 2-D launch grid."
 )
 
+# ---------- security validation (sandbox) ----------
+DISALLOWED_MODULES = {"os", "sys", "subprocess", "shutil", "socket", "requests", "urllib", "pathlib"}
+
+
+def validate_candidate_code(code_str: str) -> tuple[bool, str]:
+    """Basic static analysis to reject unsafe imports or commands before running in subprocess."""
+    try:
+        tree = ast.parse(code_str)
+    except SyntaxError as e:
+        return False, f"SyntaxError during AST parsing: {e}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root_pkg = alias.name.split(".")[0]
+                if root_pkg in DISALLOWED_MODULES:
+                    return False, f"Unsafe import detected: '{alias.name}'"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                root_pkg = node.module.split(".")[0]
+                if root_pkg in DISALLOWED_MODULES:
+                    return False, f"Unsafe import detected: '{node.module}'"
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec", "__import__", "compile"}:
+                return False, f"Disallowed function call detected: '{node.func.id}'"
+
+    return True, "Code passed security check."
+
 
 # ---------- pure helpers (unit-testable) ----------
 def extract_code(text):
@@ -71,7 +100,7 @@ def fmt(v, spec=".3f"):
 def build_feedback(outcome, res, best_ms):
     tail = (res.get("traceback") or res.get("error") or "")[-1500:]
     ask = "Reply with the full corrected module in ONE python code block and nothing else."
-    if outcome in ("compile_or_runtime_error", "timeout"):
+    if outcome in ("compile_or_runtime_error", "timeout", "security_rejection"):
         return f"Your code failed ({outcome}). Error output (end of traceback):\n{FENCE}\n{tail}\n{FENCE}\n{ask}"
     if outcome == "wrong_numerics":
         return (f"Your code ran but the result is wrong: max_abs_err={fmt(res.get('max_abs_err'), '.4g')} "
@@ -182,9 +211,15 @@ def main():
             feedback = "I could not find a python code block defining triton_swiglu. " \
                        "Reply with ONE python code block containing the full module and nothing else."
         else:
-            res = run_runner([], code)
-            outcome = classify(res)
-            feedback = None
+            is_safe, sec_msg = validate_candidate_code(code)
+            if not is_safe:
+                res = {"ran": False, "traceback": f"Security Policy Violation: {sec_msg}"}
+                outcome = "security_rejection"
+                feedback = f"Your code was rejected by the security sandbox: {sec_msg}. Do not use unapproved system modules or dynamic evaluation. Reply with ONE python code block containing a pure Triton/PyTorch kernel."
+            else:
+                res = run_runner([], code)
+                outcome = classify(res)
+                feedback = None
 
         lat = res.get("latency_ms")
         if outcome.startswith("correct") and lat is not None:
