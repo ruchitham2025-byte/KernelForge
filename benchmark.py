@@ -11,7 +11,7 @@ def run_benchmark():
     torch.cuda.synchronize()
 
     max_err = float((cand_out - ref_out).abs().max().item())
-    torch.testing.assert_close(cand_out, ref_out, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(cand_out, ref_out, rtol=1e-2, atol=5e-3)
 
     baseline_ms = float(triton.testing.do_bench(lambda: swiglu_reference(x, w1, b1, w2, b2)))
     triton_ms = float(triton.testing.do_bench(lambda: triton_swiglu(x, w1, b1, w2, b2)))
