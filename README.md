@@ -1,36 +1,58 @@
-# ⚡ KernelForge: Autonomous Self-Healing GPU Kernel Optimizer
+# KernelForge: Autonomous Hardware-in-the-Loop GPU Kernel Synthesis
 
-KernelForge is an autonomous agent pipeline designed to compile, profile, and self-heal high-performance **OpenAI Triton** GPU kernels for deep learning layers.
-
-Targeting the **SwiGLU** activation layer on **NVIDIA Tesla T4** hardware, KernelForge navigates through missing compiler intrinsics, accumulator precision drift, and dynamic range bottlenecks to converge on an optimized fused kernel delivering a **1.40x speedup** over native PyTorch.
-
----
-
-## 📊 Optimization Autopsy
-
-| Iteration | Stage / Action | Status | Latency | Max Abs Error | Technical Diagnosis & Self-Healing Action |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Iter 0** | Baseline PyTorch Reference | Reference | 2.2146 ms | 0.000000 | Baseline un-fused cuBLAS GEMMs with separate element-wise operations. |
-| **Iter 1** | Naive Triton Generation | **FAILED** | N/A | N/A | Missing intrinsic: `tl.sigmoid` is not standard across target Triton builds. |
-| **Iter 2** | Exp-based $\sigma(x)$ + Manual GEMMs | **FAILED** | N/A | 0.076171 | Epilogue mismatch: Manual additions diverged from cuBLAS fused accumulator precision. |
-| **Iter 3** | Dual-Stream Epilogue Alignment | **PASSED** | 1.7057 ms | 1.000000 | Dynamic range saturation due to unscaled standard-normal test tensors. |
-| **Iter 4** | Scaled Init + Fused Triton Epilogue | **CHAMPION** | **1.5780 ms** | **0.003906** | **Bit-level convergence within FP16 tolerances; 1.40x speedup achieved.** |
+> **Nebius x NVIDIA Global AI Hackathon Submission**
+> **Model:** `nvidia/nemotron-3-super-120b-a12b` via Nebius Token Factory
+> **Hardware:** NVIDIA Tesla T4 (Turing, SM75, 16GB GDDR6)
+> **Environment:** PyTorch 2.11.0+cu130, Triton 3.6.0
 
 ---
 
-## 🖥️ Interactive Telemetry Dashboard
-The project includes a luxury dark-mode telemetry dashboard in `dashboard/index.html` featuring:
-- Interactive sequence token slider (1024 to 8192) and hidden dimension selector.
-- Live KPI telemetry cards (1.40x speedup, 1.58 ms Triton latency, 2.21 ms PyTorch baseline).
-- Animated comparative latency visualizer with microsecond delta measurements (-636 µs per forward pass).
-- Full autonomous self-healing autopsy log.
+## 1. Overview
+KernelForge is an autonomous agent that tasks an open NVIDIA model to write, evaluate, and repair OpenAI Triton GPU kernels directly on physical accelerator hardware. 
+
+The harness catches compiler tracebacks and numerical drift, feeds error metrics back into the context window, and converges on verified, hardware-specialized kernel implementations.
 
 ---
 
-## 🚀 Quickstart
+## 2. Benchmark Results & Baselines
 
+All measurements reflect the **median of 7 interleaved rounds** using `triton.testing.do_bench` after a 1.0-second active GPU warm-up.
+
+* **Workload:** SwiGLU Epilogue (`out = (x @ W1.T + b1) * silu(x @ W2.T + b2)`)
+* **Shapes:** `x (4096, 1024)`, `W1, W2 (2048, 1024)`, `b1, b2 (2048,)` (FP16)
+* **Tolerance:** `atol=5e-3, rtol=1e-2` against PyTorch FP16 reference
+
+| Implementation | Median Latency | Relative Speedup | Max Abs Error | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **PyTorch Eager** | 1.770 ms | 1.000x (Baseline) | 0.0000 | Reference |
+| **KernelForge Champion (Triton)** | **1.573 ms** | **1.125x faster** | **0.0078** | **PASSED** |
+| **PyTorch 2.0 `torch.compile`** | 1.303 ms | 1.358x faster | 0.0000 | Compiled Reference |
+
+---
+
+## 3. Engineering Insights
+
+* **Autonomous Self-Repair:** In Iteration 1, the model encountered severe numerical error (`err=14.453`). With structured feedback, it self-healed in Iteration 2, lowering error to `0.0078` and locking in the 1.125x speedup.
+* **Why Champion Beats Eager:** Concatenates dual projections into a single cuBLAS GEMM (`torch.mm(x, W.t())`) and fuses bias addition, SiLU, and Hadamard multiplication into a single-pass Triton kernel in FP32 registers.
+* **Why `torch.compile` Leads:** TorchInductor executes loop fusion across tensor stride metadata without intermediate allocation. Our champion called `.contiguous()` on matrix slices, incurring global GDDR6 memory round-trips.
+
+---
+
+## 4. How to Reproduce
+
+### Google Colab
+1. Open `KernelForge_Nebius_run_v3.ipynb` in Colab.
+2. Select **Runtime > Change runtime type > T4 GPU**.
+3. Run All Cells and provide your `NEBIUS_API_KEY`.
+4. The loop writes `results_epilogue.json` and outputs run logs.
+
+### Local CLI
 ```bash
-git clone [https://github.com/ruchitham2025-byte/KernelForge.git](https://github.com/ruchitham2025-byte/KernelForge.git)
-cd KernelForge
-pip install -r requirements.txt
-python benchmark.py
+export NEBIUS_API_KEY="your_api_key"
+export NEBIUS_MODEL="nvidia/nemotron-3-super-120b-a12b"
+
+# Run autonomous agent loop
+python agent.py --iters 8 --task-file task_epilogue.txt
+
+# Run benchmark suite
+python runner.py --final --file champion_kernel.py
