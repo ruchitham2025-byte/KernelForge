@@ -1,0 +1,15 @@
+Write a Python module that defines
+
+    def triton_swiglu(x, w1, b1, w2, b2) -> torch.Tensor
+
+computing  out = (x @ w1.T + b1) * silu(x @ w2.T + b2),  where silu(t) = t * sigmoid(t).
+
+Shapes (all float16 CUDA tensors): x (4096, 1024), w1 (2048, 1024), w2 (2048, 1024), b1 (2048,), b2 (2048,). The output is (4096, 2048) float16.
+
+Rules:
+- The two matrix multiplications are already very fast in cuBLAS, so you MAY use torch.matmul / torch.mm for them. The work to do is everything after the matmuls.
+- Write @triton.jit kernel(s) that fuse the remaining elementwise work (the two bias adds, SiLU and the final multiply) so intermediate tensors are read and written as little as possible. The PyTorch reference does these as separate passes over memory.
+- You may restructure the matmul side if it is faster (for example, one matmul over concatenated weights).
+- Target hardware: NVIDIA Tesla T4 (Turing, sm_75, no bf16).
+- Goal: first be correct within fp16 tolerance, then be as fast as possible compared with the PyTorch reference.
+- The module must import torch, triton and triton.language as tl itself, and triton_swiglu must return the output tensor.
