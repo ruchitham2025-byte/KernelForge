@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KernelForge — Benchmark & Autopsy Telemetry</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    h1 { color: #58a6ff; font-size: 24px; margin-bottom: 4px; }
+    p.subtitle { color: #8b949e; margin-top: 0; margin-bottom: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; }
+    .card-title { font-size: 12px; color: #8b949e; text-transform: uppercase; font-weight: 600; }
+    .card-value { font-size: 28px; font-weight: 700; margin-top: 8px; color: #f0f6fc; }
+    .card-meta { font-size: 12px; color: #3fb950; margin-top: 4px; }
+    .chart-container { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; margin-bottom: 24px; }
+    table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #21262d; font-size: 13px; }
+    th { background: #1f242c; color: #8b949e; font-weight: 600; }
+    .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-pass { background: #238636; color: #fff; }
+    .badge-fail { background: #da3633; color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>KernelForge Telemetry (Recorded Replay)</h1>
+    <p class="subtitle">Hardware: NVIDIA Tesla T4 | Model: nvidia/nemotron-3-super-120b-a12b (Nebius Token Factory)</p>
+    
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">PyTorch Eager</div>
+        <div class="card-value">1.770 ms</div>
+        <div class="card-meta">Baseline (7-run median)</div>
+      </div>
+      <div class="card">
+        <div class="card-title">KernelForge Champion</div>
+        <div class="card-value">1.573 ms</div>
+        <div class="card-meta">1.125x speedup vs Eager</div>
+      </div>
+      <div class="card">
+        <div class="card-title">PyTorch 2.0 Compile</div>
+        <div class="card-value">1.303 ms</div>
+        <div class="card-meta" style="color: #8b949e;">TorchInductor Full-Fusion</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Max Abs Error</div>
+        <div class="card-value">0.0078</div>
+        <div class="card-meta">FP16 Strict Pass</div>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <canvas id="benchmarkChart" height="100"></canvas>
+    </div>
+
+    <h2>Optimization Loop History (Run 20261026_125246)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Iteration</th>
+          <th>Outcome</th>
+          <th>Latency (ms)</th>
+          <th>Speedup</th>
+          <th>Max Abs Error</th>
+          <th>Status / Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><span class="badge badge-fail">wrong_numerics</span></td>
+          <td>—</td>
+          <td>—</td>
+          <td>14.453</td>
+          <td>Model had numerical drift in epilogue math</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><span class="badge badge-pass">correct_faster</span></td>
+          <td>1.573</td>
+          <td>1.125x</td>
+          <td>0.0078</td>
+          <td>Autonomous repair: verified correct & selected as Champion</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><span class="badge badge-fail">wrong_numerics</span></td>
+          <td>—</td>
+          <td>—</td>
+          <td>16.646</td>
+          <td>Tuning attempt introduced math regression</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><span class="badge badge-fail">wrong_numerics</span></td>
+          <td>—</td>
+          <td>—</td>
+          <td>16.646</td>
+          <td>Loop halted (stopping rule: 2 consecutive non-improvements)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    const ctx = document.getElementById('benchmarkChart').getContext('2d');
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ['PyTorch Eager', 'KernelForge Champion (Triton)', 'PyTorch torch.compile'],
+        datasets: [{
+          label: 'Latency (ms) — Lower is better',
+          data: [1.770, 1.573, 1.303],
+          backgroundColor: ['#8b949e', '#238636', '#1f6feb']
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, grid: { color: '#30363d' }, ticks: { color: '#8b949e' } },
+          x: { grid: { display: false }, ticks: { color: '#8b949e' } }
+        }
+      }
+    });
+  </script>
+</body>
+</html>

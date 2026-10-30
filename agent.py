@@ -19,21 +19,6 @@ SYSTEM_PROMPT = (
     "(all imports included) and no other text."
 )
 
-TASK_PROMPT = (
-    "Write a Python module that defines\n\n"
-    "    def triton_swiglu(x, w1, b1, w2, b2) -> torch.Tensor\n\n"
-    "computing  out = (x @ w1.T + b1) * silu(x @ w2.T + b2),  where silu(t) = t * sigmoid(t).\n\n"
-    "Shapes (all float16 CUDA tensors): x (4096, 1024), w1 (2048, 1024), w2 (2048, 1024), "
-    "b1 (2048,), b2 (2048,). The output is (4096, 2048) float16.\n\n"
-    "Rules:\n"
-    "- The function must launch your own @triton.jit kernel(s) and return the output tensor. "
-    "Do not call torch.matmul / F.linear inside it. The harness calls only triton_swiglu(x, w1, b1, w2, b2).\n"
-    "- Target hardware: NVIDIA Tesla T4 (Turing, sm_75, no bf16).\n"
-    "- Goal: first be correct within fp16 tolerance, then be as fast as possible compared with PyTorch "
-    "(two cuBLAS matmuls plus separate elementwise ops). Fusing both matmuls and the epilogue into one kernel is encouraged.\n"
-    "- The module must import torch, triton and triton.language as tl itself."
-)
-
 HINTS = (
     "\n\nTriton notes: tile sizes (BLOCK_M, BLOCK_N, BLOCK_K) must be tl.constexpr kernel parameters passed at "
     "launch, and tl.arange needs constexpr bounds. Use tl.dot on 2-D tiles accumulating in float32. Load the "
@@ -97,14 +82,14 @@ def fmt(v, spec=".3f"):
     return "n/a" if v is None else format(v, spec)
 
 
-def build_feedback(outcome, res, best_ms):
+def build_feedback(outcome, res, best_ms, atol, rtol):
     tail = (res.get("traceback") or res.get("error") or "")[-1500:]
     ask = "Reply with the full corrected module in ONE python code block and nothing else."
     if outcome in ("compile_or_runtime_error", "timeout", "security_rejection"):
         return f"Your code failed ({outcome}). Error output (end of traceback):\n{FENCE}\n{tail}\n{FENCE}\n{ask}"
     if outcome == "wrong_numerics":
         return (f"Your code ran but the result is wrong: max_abs_err={fmt(res.get('max_abs_err'), '.4g')} "
-                f"(allowed: atol 5e-3 + rtol 1e-2 against the PyTorch fp16 reference; None means NaN/inf in the output). {ask}")
+                f"(allowed: atol {atol} + rtol {rtol} against the PyTorch fp16 reference; None means NaN/inf in the output). {ask}")
     base = fmt(res.get("baseline_ms"))
     if outcome == "correct_slower":
         return (f"Correct (max_abs_err={fmt(res.get('max_abs_err'), '.4g')}) but not faster: {fmt(res.get('latency_ms'))} ms "
@@ -156,7 +141,7 @@ def main():
     ap.add_argument("--iters", type=int, default=6)
     ap.add_argument("--hints", action="store_true", help="add short Triton API notes to the task prompt")
     ap.add_argument("--list-models", action="store_true")
-    ap.add_argument("--task-file", help="read the task prompt from a text file")
+    ap.add_argument("--task", required=True, help="read the task from a json file")
     a = ap.parse_args()
 
     key = os.environ.get("NEBIUS_API_KEY")
@@ -174,24 +159,51 @@ def main():
     if not model:
         sys.exit("Error: no model. Set NEBIUS_MODEL or pass --model.")
 
-    os.makedirs("logs", exist_ok=True)
-    log_path = f"logs/run_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
+    task_path = a.task
+    with open(task_path) as f:
+        task_cfg = json.load(f)
+
+    # Resolve prompt_file relative to the task json's directory
+    prompt_file = task_cfg["prompt_file"]
+    prompt_path = os.path.join(os.path.dirname(os.path.abspath(task_path)), prompt_file)
+    with open(prompt_path) as f:
+        task_prompt = f.read().strip()
+
+    # Tolerance from task json
+    atol = task_cfg["atol"]
+    rtol = task_cfg["rtol"]
+
+    os.makedirs("artifacts", exist_ok=True)
+    run_id = f"run-{datetime.now():%Y%m%d-%H%M%S}"
+    run_dir = os.path.join("artifacts", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    results_path = os.path.join(run_dir, "results.json")
+    
+    # Compute sha256 of the task file
+    import hashlib
+    with open(task_path, "rb") as f:
+        task_sha256 = hashlib.sha256(f.read()).hexdigest()
+
+    # First line of run.jsonl: header
+    run_jsonl_path = os.path.join(run_dir, "run.jsonl")
+    with open(run_jsonl_path, "w") as f:
+        f.write(f'{{"header": true, "task_name": "{task_cfg["name"]}", "task_file_sha256": "{task_sha256}", "run_id": "{run_id}", "model": "{model}", "base_url": "{BASE_URL}"}}\n')
+
+    log_path = os.path.join(run_dir, "run.jsonl")
 
     def log(rec):
         with open(log_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
 
-    base = run_runner(["--baseline"])
+    base = run_runner(["--baseline", "--task", a.task])
     if not base.get("ran"):
         sys.exit("Baseline failed:\n" + (base.get("traceback") or base.get("error") or "unknown"))
     baseline_ms = base["latency_ms"]
     print(f"Model: {model}\nEndpoint: {BASE_URL}\nHints: {a.hints}\nInitial PyTorch timing: {baseline_ms:.3f} ms (separate process, cold GPU; NOT used for speedups)")
-    log({"header": True, "model": model, "base_url": BASE_URL, "hints": a.hints,
-         "iters": a.iters, "initial_baseline_ms": baseline_ms, "task_file": a.task_file})
+    log({"header": True, "task_name": task_cfg["name"], "task_file_sha256": task_sha256, "run_id": run_id, "model": model, "base_url": BASE_URL})
 
-    task = open(a.task_file).read().strip() if a.task_file else TASK_PROMPT
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": task + (HINTS if a.hints else "")}]
+                {"role": "user", "content": task_prompt + (HINTS if a.hints else "")}]
     best = None  # (latency_ms, code, iteration, res)
     no_improve = 0
     rows = []
@@ -217,7 +229,7 @@ def main():
                 outcome = "security_rejection"
                 feedback = f"Your code was rejected by the security sandbox: {sec_msg}. Do not use unapproved system modules or dynamic evaluation. Reply with ONE python code block containing a pure Triton/PyTorch kernel."
             else:
-                res = run_runner([], code)
+                res = run_runner(["--task", a.task], code)
                 outcome = classify(res)
                 feedback = None
 
@@ -231,14 +243,15 @@ def main():
             no_improve += 1
 
         if feedback is None:
-            feedback = build_feedback(outcome, res, best[0] if best else None)
+            feedback = build_feedback(outcome, res, best[0] if best else None, atol, rtol)
         messages.append({"role": "user", "content": feedback})
 
         err_tail = (res.get("traceback") or res.get("error") or "")[-1500:] if not outcome.startswith("correct") else ""
         rec = {"iteration": it, "timestamp": datetime.now().isoformat(timespec="seconds"), "model": model,
                "base_url": BASE_URL, "prompt_tokens": pt, "completion_tokens": ct, "code": code,
                "outcome": outcome, "latency_ms": lat, "baseline_ms": res.get("baseline_ms"),
-               "speedup": res.get("speedup"), "max_abs_err": res.get("max_abs_err"), "error_tail": err_tail}
+               "speedup": res.get("speedup"), "max_abs_err": res.get("max_abs_err"), "error_tail": err_tail,
+               "run_id": run_id, "atol": atol, "rtol": rtol}
         log(rec)
         rows.append(rec)
         sp = res.get("speedup")
@@ -250,11 +263,12 @@ def main():
 
     final = None
     if best:
-        with open("champion_kernel.py", "w") as f:
+        champion_path = os.path.join(run_dir, "champion.py")
+        with open(champion_path, "w") as f:
             f.write(best[1])
-        print("\nFinal fair benchmark of the champion: eager vs torch.compile vs champion, "
+        print(f"\nChampion saved to {champion_path}. Running fair benchmark: eager vs torch.compile vs champion, "
               "7 interleaved rounds (torch.compile can take a minute)...")
-        final = run_runner(["--final", "--file", "champion_kernel.py"], timeout=900)
+        final = run_runner(["--final", "--task", a.task, "--file", champion_path, "--out", results_path], timeout=900)
     summary = {"summary": True, "champion_iteration": best[2] if best else None,
                "loop_baseline_ms": best[3].get("baseline_ms") if best else None,
                "loop_best_ms": best[0] if best else None,
@@ -263,6 +277,11 @@ def main():
         for k in ("eager_ms", "torch_compile_ms", "champion_ms", "speedup_vs_eager",
                   "speedup_vs_compile", "torch_compile_error"):
             summary[k] = final.get(k)
+    if final and final.get("ran"):
+        for k in ("eager_ms", "torch_compile_ms", "champion_ms", "speedup_vs_eager",
+                  "speedup_vs_compile", "torch_compile_error"):
+            summary[k] = final.get(k)
+
     log(summary)
     if best:
         if final and final.get("ran") and final.get("champion_ms"):
@@ -270,7 +289,7 @@ def main():
             tc_s = "n/a" if tc is None else f"{tc:.3f} ms"
             sc = final.get("speedup_vs_compile")
             sc_s = "n/a" if sc is None else f"{sc:.2f}x"
-            print(f"\nChampion: iteration {best[2]} (saved to champion_kernel.py, details in results.json)")
+            print(f"\nChampion: iteration {best[2]} (saved to {champion_path}, details in {results_path})")
             print(f"  eager PyTorch   : {final['eager_ms']:.3f} ms")
             print(f"  torch.compile   : {tc_s}")
             print(f"  champion kernel : {final['champion_ms']:.3f} ms")

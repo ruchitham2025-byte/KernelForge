@@ -1,0 +1,43 @@
+{
+  "source": "Kaggle notebook HTML export",
+  "source_file": "Kaggle Notebook Editor_files/jupyterlab-index-d4c941490de0a1c4.html",
+  "gpu": "NVIDIA Tesla T4",
+  "status": "historical",
+  "repeat_count": 2,
+  "correctness": "passed for both repeats",
+  "benchmark_method": "median of 7 interleaved rounds of triton.testing.do_bench after 1 s GPU warm-up each",
+  "rounds": 7,
+  "tolerance": {
+    "atol": 0.005,
+    "rtol": 0.01
+  },
+  "repeats": [
+    {
+      "name": "repeat_1",
+      "champion_ms": 1.3394880294799805,
+      "eager_ms": 1.7825599908828735,
+      "torch_compile_ms": 1.321344017982483,
+      "numerics_ok": true,
+      "max_abs_err": 0.0078125,
+      "speedup_vs_eager": 1.3307770966605081,
+      "speedup_vs_compile": 0.9864545176230194
+    },
+    {
+      "name": "repeat_2",
+      "champion_ms": 1.340992033481598,
+      "eager_ms": 1.8114240169525146,
+      "torch_compile_ms": 1.3496320247650146,
+      "numerics_ok": true,
+      "max_abs_err": 0.0078125,
+      "speedup_vs_eager": 1.3508089322868988,
+      "speedup_vs_compile": 1.0064429847961027
+    }
+  ],
+  "averages": {
+    "champion_ms": 1.3402400314807893,
+    "eager_ms": 1.796992003917694,
+    "torch_compile_ms": 1.3354880213737487,
+    "speedup_vs_eager": 1.3407920144737035,
+    "speedup_vs_compile": 0.996448751209561
+  }
+}

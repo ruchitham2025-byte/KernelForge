@@ -1,0 +1,15 @@
+{
+  "name": "swiglu_epilogue",
+  "prompt_file": "task_epilogue.txt",
+  "shapes": {
+    "x": [4096, 1024],
+    "w1": [2048, 1024],
+    "w2": [2048, 1024],
+    "b1": [2048],
+    "b2": [2048]
+  },
+  "dtype": "float16",
+  "atol": 5e-3,
+  "rtol": 1e-2,
+  "allow_matmul": true
+}

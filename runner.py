@@ -14,14 +14,12 @@ import os
 import sys
 import time
 import traceback
+import argparse
 
 try:
     import torch
 except ImportError:  # reported as JSON from main()
     torch = None
-
-M, K, N = 4096, 1024, 2048
-ATOL, RTOL = 5e-3, 1e-2
 
 
 def emit(d):
@@ -35,7 +33,7 @@ def median(xs):
     return xs[n // 2] if n % 2 else 0.5 * (xs[n // 2 - 1] + xs[n // 2])
 
 
-def make_inputs():
+def make_inputs(M, K, N):
     g = torch.Generator().manual_seed(0)
 
     def r(*shape, scale=1.0):
@@ -87,7 +85,7 @@ def load_candidate(code):
     return mod
 
 
-def check_candidate(fn, inputs):
+def check_candidate(fn, inputs, atol, rtol):
     """Run the candidate once; return (ran, numerics_ok, max_abs_err)."""
     ref = reference(*inputs)
     res = fn(*inputs)
@@ -99,21 +97,40 @@ def check_candidate(fn, inputs):
                          f"got shape {tuple(res.shape)}, dtype {res.dtype}, device {res.device}")
     finite = bool(torch.isfinite(res).all().item())
     max_err = float((res.float() - ref.float()).abs().max().item()) if finite else None
-    ok = finite and bool(torch.allclose(res.float(), ref.float(), rtol=RTOL, atol=ATOL))
+    ok = finite and bool(torch.allclose(res.float(), ref.float(), rtol=rtol, atol=atol))
     return ok, max_err
 
 
 def main():
-    args = sys.argv[1:]
-    out = {"ran": False, "success": False, "numerics_ok": False, "latency_ms": None,
-           "baseline_ms": None, "speedup": None, "max_abs_err": None,
-           "error": "", "traceback": ""}
+    global M, K, N, ATOL, RTOL
+    out = {"ran": False, "success": False, "numerics_ok": False,
+           "latency_ms": None, "baseline_ms": None, "speedup": None,
+           "max_abs_err": None, "error": "", "traceback": ""}
     try:
+        parser = argparse.ArgumentParser(description="Run Triton SwiGLU kernel benchmark")
+        parser.add_argument("--task", required=True, help="Path to task json file with M, K, N, ATOL, RTOL")
+        parser.add_argument("--out", help="Path to write results JSON (default: results.json in cwd)")
+        parser.add_argument("--baseline", action="store_true", help="Time the PyTorch reference only")
+        parser.add_argument("--final", action="store_true", help="Fair final benchmark: eager vs torch.compile vs champion")
+        parser.add_argument("--file", help="Path to champion kernel file (for --final)")
+        args = parser.parse_args()
+
+        # Read task config
+        with open(args.task) as f:
+            task_cfg = json.load(f)
+
+        M = task_cfg["shapes"]["x"][0]
+        K = task_cfg["shapes"]["x"][1]
+        N = task_cfg["shapes"]["w1"][0]
+        ATOL = task_cfg["atol"]
+        RTOL = task_cfg["rtol"]
+
         if torch is None:
             raise RuntimeError("PyTorch is not installed")
         if not torch.cuda.is_available():
             raise RuntimeError("No CUDA GPU available")
-        inputs = make_inputs()
+
+        inputs = make_inputs(M, K, N)
         eager = lambda: reference(*inputs)
 
         if "--baseline" in args:
@@ -124,8 +141,11 @@ def main():
             emit(out)
             return
 
+        # Determine output path
+        out_path = args.out or "results.json"
+
         if "--file" in args:
-            with open(args[args.index("--file") + 1]) as f:
+            with open(args.file) as f:
                 code = f.read()
         else:
             code = sys.stdin.read()
@@ -136,7 +156,7 @@ def main():
             raise RuntimeError("Module does not define a callable triton_swiglu(x, w1, b1, w2, b2)")
         cand = lambda: fn(*inputs)
 
-        ok, max_err = check_candidate(fn, inputs)
+        ok, max_err = check_candidate(fn, inputs, ATOL, RTOL)
         out.update(ran=True, max_abs_err=max_err, numerics_ok=ok, success=ok)
 
         if "--final" in args:
@@ -168,7 +188,7 @@ def main():
                 "tolerance": {"atol": ATOL, "rtol": RTOL},
                 "method": "median of 7 interleaved rounds of triton.testing.do_bench after 1 s GPU warm-up each",
             }
-            with open("results.json", "w") as f:
+            with open(out_path, "w") as f:
                 json.dump(res, f, indent=2)
             emit(res)
             return
@@ -180,6 +200,7 @@ def main():
             t_c, t_b = median(times["cand"]), median(times["eager"])
             out.update(latency_ms=t_c, baseline_ms=t_b, speedup=t_b / t_c)
         emit(out)
+
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"[:500]
         out["traceback"] = traceback.format_exc()[-1500:]

@@ -1,0 +1,1 @@
+{"header": true, "task_name": "swiglu_epilogue", "task_file_sha256": "1724288336be416a4d1715a9a53498fbb32b270e02b7de4f78515a930bc7c370", "run_id": "run-20261030-200919", "model": "nvidia/nemotron-3-super-120b-a12b", "base_url": "https://api.tokenfactory.nebius.com/v1"}
